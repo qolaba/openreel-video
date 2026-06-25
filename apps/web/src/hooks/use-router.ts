@@ -6,7 +6,8 @@ export type AppRoute =
   | "new"
   | "templates"
   | "recent"
-  | "share";
+  | "share"
+  | "remote";
 
 export interface RouteParams {
   dimensions?: string;
@@ -24,6 +25,14 @@ export interface RouterState {
 }
 
 function parseHash(hash: string): RouterState {
+  // Check for remote mode via regular URL search params (before hash)
+  if (typeof window !== "undefined") {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("mode") === "remote") {
+      return { route: "remote", params: {} };
+    }
+  }
+
   const cleanHash = hash.replace(/^#\/?/, "");
   const [path, queryString] = cleanHash.split("?");
 
@@ -44,6 +53,7 @@ function parseHash(hash: string): RouterState {
     "templates",
     "recent",
     "share",
+    "remote",
   ];
 
   if (route === "share" && pathParts[1]) {

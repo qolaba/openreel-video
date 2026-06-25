@@ -24,6 +24,7 @@ import {
   MessageSquare,
   Star,
   Upload,
+  Send,
   MoreHorizontal,
   Command,
   Search,
@@ -32,6 +33,7 @@ import { useProjectStore } from "../../stores/project-store";
 import { useUIStore } from "../../stores/ui-store";
 import { useThemeStore } from "../../stores/theme-store";
 import { useRouter } from "../../hooks/use-router";
+import { useRemoteMode } from "../../hooks/use-remote-mode";
 import {
   getExportEngine,
   getDeviceProfile,
@@ -96,6 +98,7 @@ export const Toolbar: React.FC = () => {
   } = useUIStore();
   const { mode: themeMode, toggleTheme } = useThemeStore();
   const { navigate } = useRouter();
+  const { isRemoteMode, sendToParent } = useRemoteMode();
   const { openSettings } = useSettingsStore();
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
@@ -453,6 +456,112 @@ export const Toolbar: React.FC = () => {
       complete: false,
     });
   }, []);
+
+  // Remote mode: export to blob and send back via postMessage
+  const handleRemoteExport = useCallback(async () => {
+    try {
+      setExportState({
+        isExporting: true,
+        progress: 0,
+        phase: "Initializing...",
+        error: null,
+        complete: false,
+      });
+      sendToParent({ type: "export-started" });
+
+      const engine = getExportEngine();
+      await engine.initialize();
+
+      const videoSettings: Partial<VideoExportSettings> = {
+        width: project.settings.width,
+        height: project.settings.height,
+        frameRate: project.settings.frameRate,
+        format: "mp4",
+        codec: "h264",
+        bitrate: 12000,
+        quality: 85,
+      };
+
+      // Use in-memory writable stream to collect the output as a blob
+      let buffer = new Uint8Array(16 * 1024 * 1024);
+      let length = 0;
+      let cursor = 0;
+
+      const grow = (needed: number) => {
+        if (needed <= buffer.length) return;
+        let newSize = buffer.length;
+        while (newSize < needed) newSize *= 2;
+        const next = new Uint8Array(newSize);
+        next.set(buffer.subarray(0, length));
+        buffer = next;
+      };
+
+      const memoryWritable = {
+        seek(position: number) { cursor = position; return Promise.resolve(); },
+        write(data: unknown) {
+          if (data instanceof ArrayBuffer) {
+            const bytes = new Uint8Array(data);
+            const end = cursor + bytes.byteLength;
+            grow(end);
+            buffer.set(bytes, cursor);
+            if (end > length) length = end;
+            cursor = end;
+          } else if (ArrayBuffer.isView(data)) {
+            const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            const end = cursor + bytes.byteLength;
+            grow(end);
+            buffer.set(bytes, cursor);
+            if (end > length) length = end;
+            cursor = end;
+          }
+          return Promise.resolve();
+        },
+        close() { return Promise.resolve(); },
+        abort() { return Promise.resolve(); },
+        truncate() { return Promise.resolve(); },
+      } as unknown as FileSystemWritableFileStream;
+
+      const generator = engine.exportVideo(project, videoSettings, memoryWritable);
+      let finalResult: ExportResult | undefined;
+
+      while (true) {
+        const { value, done } = await generator.next();
+        if (done) {
+          finalResult = value;
+          break;
+        }
+        const progress = value.progress * 100;
+        const phase = value.phase === "complete" ? "Complete!" : `${value.phase}...`;
+        setExportState((prev) => ({ ...prev, progress, phase }));
+        sendToParent({ type: "export-progress", progress, phase });
+      }
+
+      if (finalResult?.success) {
+        const videoBlob = new Blob([buffer.slice(0, length)], { type: "video/mp4" });
+        sendToParent({ type: "export-complete", videoBlob, format: "mp4" });
+        setExportState((prev) => ({ ...prev, complete: true, phase: "Sent!" }));
+        toast.success("Export complete", "Video sent back to Qolaba.");
+      } else {
+        throw new Error(finalResult?.error?.message || "Export failed");
+      }
+
+      setTimeout(() => {
+        setExportState({ isExporting: false, progress: 0, phase: "", error: null, complete: false });
+      }, 2000);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : "Export failed";
+      sendToParent({ type: "export-error", error: errMsg });
+      setExportState((prev) => ({ ...prev, isExporting: false, error: errMsg }));
+    }
+  }, [project, sendToParent]);
+
+  // Listen for remote export trigger (from parent postMessage)
+  useEffect(() => {
+    if (!isRemoteMode) return;
+    const handler = () => handleRemoteExport();
+    window.addEventListener("openreel-remote-export", handler);
+    return () => window.removeEventListener("openreel-remote-export", handler);
+  }, [isRemoteMode, handleRemoteExport]);
 
   const handleCustomExport = useCallback(
     async (settings: VideoExportSettings) => {
@@ -825,7 +934,17 @@ export const Toolbar: React.FC = () => {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* Export */}
+        {/* Export — remote mode gets a "Send Back" button */}
+        {isRemoteMode && !exportState.isExporting && !exportState.error && !exportState.complete && (
+          <button
+            onClick={handleRemoteExport}
+            className="relative inline-flex items-center gap-1.5 px-3.5 py-[5px] rounded-md bg-accent text-accent-fg font-semibold text-[12.5px] shadow-glow hover:bg-accent-strong transition-colors"
+          >
+            <Send size={13} />
+            <span>Send Back</span>
+          </button>
+        )}
+
         {exportState.isExporting ? (
           <div className="relative">
             <button
@@ -850,9 +969,9 @@ export const Toolbar: React.FC = () => {
         ) : exportState.complete ? (
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-accent-soft text-accent text-[12.5px]">
             <Check size={13} />
-            <span className="font-medium">Saved!</span>
+            <span className="font-medium">{isRemoteMode ? "Sent!" : "Saved!"}</span>
           </div>
-        ) : (
+        ) : !isRemoteMode ? (
           <DropdownMenu open={isExportOpen} onOpenChange={setIsExportOpen}>
             <DropdownMenuTrigger asChild>
               <button
@@ -936,7 +1055,7 @@ export const Toolbar: React.FC = () => {
               </div>
             </DropdownMenuContent>
           </DropdownMenu>
-        )}
+        ) : null}
       </div>
 
       {/* ─── Auxiliary popups & dialogs ───────────────────────── */}

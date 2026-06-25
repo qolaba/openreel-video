@@ -11,6 +11,7 @@ import { useProjectStore } from "./stores/project-store";
 import { useRouter } from "./hooks/use-router";
 import { useProjectRecovery } from "./hooks/useProjectRecovery";
 import { useKieAIPoller } from "./hooks/useKieAIPoller";
+import { useRemoteMode } from "./hooks/use-remote-mode";
 import { SOCIAL_MEDIA_PRESETS, type SocialMediaCategory } from "@openreel/core";
 import { TooltipProvider } from "@openreel/ui";
 
@@ -43,6 +44,7 @@ function App() {
 
   const { route, params, navigate, parsedDimensions, fps } = useRouter();
   const hasHandledInitialRoute = useRef(false);
+  const { isRemoteMode, loading: remoteLoading } = useRemoteMode();
 
   useKieAIPoller();
 
@@ -89,6 +91,9 @@ function App() {
 
       createNewProject(projectName, { width, height, frameRate });
       navigate("editor");
+    } else if (route === "remote") {
+      // Remote mode: useRemoteMode hook handles project creation & video import
+      hasHandledInitialRoute.current = true;
     } else if (route === "editor" && skipWelcomeScreen) {
       hasHandledInitialRoute.current = true;
     } else if (["welcome", "templates", "recent"].includes(route)) {
@@ -123,7 +128,7 @@ function App() {
   }, [handleKeyDown]);
 
   const showWelcome =
-    ["welcome", "templates", "recent"].includes(route) && !skipWelcomeScreen;
+    ["welcome", "templates", "recent"].includes(route) && !skipWelcomeScreen && !isRemoteMode;
   const initialTab =
     route === "templates"
       ? "templates"
@@ -143,6 +148,12 @@ function App() {
         ) : (
           <Suspense fallback={<LoadingSpinner message="Loading editor..." />}>
             <EditorInterface />
+            {isRemoteMode && remoteLoading && (
+              <div className="fixed inset-0 z-50 bg-background/80 flex flex-col items-center justify-center">
+                <div className="w-10 h-10 border-2 border-primary border-t-transparent rounded-full animate-spin mb-3" />
+                <p className="text-sm text-text-secondary">Loading remote video...</p>
+              </div>
+            )}
           </Suspense>
         )}
         <ToastContainer />
