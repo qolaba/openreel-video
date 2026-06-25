@@ -20,6 +20,8 @@ export default defineConfig({
   },
   build: {
     target: "esnext",
+    outDir: path.resolve(__dirname, "../../dist"),
+    emptyOutDir: true,
     rollupOptions: {
       output: {
         manualChunks: (id) => {
